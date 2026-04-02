@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +34,16 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
 const OPENAI_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
 const OPENAI_VOICE_ID = process.env.OPENAI_VOICE_ID || "";
+const CAMERA_STREAM_URL = process.env.CAMERA_STREAM_URL || "";
+const LIDAR_STREAM_URL = process.env.LIDAR_STREAM_URL || "";
+const RELAY_GPIO = (process.env.RELAY_GPIO || "17,27,22,23")
+  .split(",")
+  .map((v) => Number(v.trim()))
+  .filter((v) => Number.isFinite(v));
+const MOTOR_GPIO = (process.env.MOTOR_GPIO || "13,20,19,21")
+  .split(",")
+  .map((v) => Number(v.trim()))
+  .filter((v) => Number.isFinite(v));
 
 const SYSTEM_INSTRUCTIONS =
   "You are V25, a confident, calm robot brain embedded in a small humanoid. " +
@@ -46,6 +58,23 @@ const MIME = {
   ".jpg": "image/jpeg",
   ".ico": "image/x-icon"
 };
+
+let Gpio = null;
+try {
+  const mod = await import("onoff");
+  Gpio = mod.Gpio;
+} catch {}
+
+const relayPins = [];
+const motorPins = [];
+if (Gpio) {
+  for (const pin of RELAY_GPIO.slice(0, 4)) {
+    relayPins.push(new Gpio(pin, "out"));
+  }
+  for (const pin of MOTOR_GPIO.slice(0, 4)) {
+    motorPins.push(new Gpio(pin, "out"));
+  }
+}
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
@@ -181,9 +210,9 @@ async function handleTranscribe(req, res) {
     return;
   }
 
-  const file = new File([audioBuffer], "audio.webm", { type: contentType });
   const form = new FormData();
-  form.append("file", file);
+  const blob = new Blob([audioBuffer], { type: contentType });
+  form.append("file", blob, "audio.webm");
   form.append("model", OPENAI_TRANSCRIBE_MODEL);
 
   const apiRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -202,6 +231,155 @@ async function handleTranscribe(req, res) {
 
   const json = await apiRes.json();
   sendJson(res, 200, { text: json.text || "" });
+}
+
+async function handleEmotion(req, res) {
+  if (!OPENAI_API_KEY) {
+    sendJson(res, 500, { error: "Missing OPENAI_API_KEY" });
+    return;
+  }
+  let payload = {};
+  try {
+    payload = JSON.parse((await readBody(req)).toString("utf-8"));
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+
+  const text = String(payload.text || "").trim();
+  if (!text) {
+    sendJson(res, 400, { error: "Missing text" });
+    return;
+  }
+
+  const body = {
+    model: OPENAI_MODEL,
+    instructions:
+      "Classify the emotion of the assistant reply into exactly one of: neutral, happy, excited, curious, focused, sleepy, alert, surprised. " +
+      "Respond with only the single word label.",
+    input: text,
+    temperature: 0.2
+  };
+
+  const apiRes = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!apiRes.ok) {
+    const errText = await apiRes.text();
+    sendJson(res, apiRes.status, { error: errText || "OpenAI error" });
+    return;
+  }
+
+  const json = await apiRes.json();
+  const label = (extractOutputText(json) || "neutral").trim().toLowerCase();
+  sendJson(res, 200, { emotion: label });
+}
+
+async function handleRelay(req, res) {
+  let payload = {};
+  try {
+    payload = JSON.parse((await readBody(req)).toString("utf-8"));
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+
+  const id = Number(payload.id);
+  const state = String(payload.state || "").toLowerCase();
+  if (!Number.isFinite(id) || id < 1 || id > 4 || !["on", "off"].includes(state)) {
+    sendJson(res, 400, { error: "Invalid relay request" });
+    return;
+  }
+
+  if (!relayPins.length) {
+    sendJson(res, 500, { error: "GPIO not available (install onoff on Pi)" });
+    return;
+  }
+
+  const pin = relayPins[id - 1];
+  await pin.write(state === "on" ? 1 : 0);
+  sendJson(res, 200, { ok: true });
+}
+
+function setMotor(l1, l2, r1, r2) {
+  if (!motorPins.length) return;
+  motorPins[0].writeSync(l1);
+  motorPins[1].writeSync(l2);
+  motorPins[2].writeSync(r1);
+  motorPins[3].writeSync(r2);
+}
+
+async function handleMotor(req, res) {
+  let payload = {};
+  try {
+    payload = JSON.parse((await readBody(req)).toString("utf-8"));
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+
+  const action = String(payload.action || "").toLowerCase();
+  if (!["forward", "back", "left", "right", "stop"].includes(action)) {
+    sendJson(res, 400, { error: "Invalid motor action" });
+    return;
+  }
+
+  if (!motorPins.length) {
+    sendJson(res, 500, { error: "GPIO not available (install onoff on Pi)" });
+    return;
+  }
+
+  if (action === "forward") setMotor(1, 0, 1, 0);
+  if (action === "back") setMotor(0, 1, 0, 1);
+  if (action === "left") setMotor(0, 1, 1, 0);
+  if (action === "right") setMotor(1, 0, 0, 1);
+  if (action === "stop") setMotor(0, 0, 0, 0);
+
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleCameraProxy(req, res) {
+  if (!CAMERA_STREAM_URL) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Camera not configured");
+    return;
+  }
+  const camRes = await fetch(CAMERA_STREAM_URL);
+  if (!camRes.ok || !camRes.body) {
+    res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Camera unavailable");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": camRes.headers.get("content-type") || "multipart/x-mixed-replace; boundary=frame"
+  });
+  await pipeline(Readable.fromWeb(camRes.body), res);
+}
+
+async function handleLidarProxy(req, res) {
+  if (!LIDAR_STREAM_URL) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Lidar not configured");
+    return;
+  }
+  const lidarRes = await fetch(LIDAR_STREAM_URL);
+  if (!lidarRes.ok || !lidarRes.body) {
+    res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Lidar unavailable");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive"
+  });
+  await pipeline(Readable.fromWeb(lidarRes.body), res);
 }
 
 async function serveStatic(req, res) {
@@ -234,6 +412,26 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/api/transcribe") {
     await handleTranscribe(req, res);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/emotion") {
+    await handleEmotion(req, res);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/relay") {
+    await handleRelay(req, res);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/motor") {
+    await handleMotor(req, res);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/camera") {
+    await handleCameraProxy(req, res);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/lidar") {
+    await handleLidarProxy(req, res);
     return;
   }
 
