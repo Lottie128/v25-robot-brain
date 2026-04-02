@@ -177,10 +177,12 @@ async function handleTts(req, res) {
     return;
   }
 
+  const reqFormat = String(payload.format || "").toLowerCase();
+  const format = ["mp3", "wav", "opus"].includes(reqFormat) ? reqFormat : "mp3";
   const ttsBody = {
     model: OPENAI_TTS_MODEL,
     input: text,
-    format: "mp3",
+    format,
     voice: OPENAI_VOICE_ID ? { id: OPENAI_VOICE_ID } : "marin"
   };
 
@@ -199,7 +201,8 @@ async function handleTts(req, res) {
     return;
   }
 
-  res.writeHead(200, { "Content-Type": "audio/mpeg" });
+  const contentType = format === "wav" ? "audio/wav" : format === "opus" ? "audio/ogg" : "audio/mpeg";
+  res.writeHead(200, { "Content-Type": contentType });
   const buf = Buffer.from(await apiRes.arrayBuffer());
   res.end(buf);
 }

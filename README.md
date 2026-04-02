@@ -70,3 +70,26 @@ PI_GPIO_AGENT_URL=http://192.168.1.50:8070
 ```
 
 The Mac server will forward `/api/relay` and `/api/motor` to the Pi agent.
+
+## Tkinter Pi App (All local UI, Mac as brain)
+
+Install dependencies on the Pi:
+```
+sudo apt update
+sudo apt install -y python3-tk python3-pil python3-numpy portaudio19-dev alsa-utils
+python3 -m pip install -r pi/requirements.txt
+```
+
+Run the app (full UI):
+```
+MAC_SERVER_URL=http://192.168.1.34:3000 \\
+CAMERA_STREAM_URL=http://127.0.0.1:8080/stream.mjpg \\
+LIDAR_STREAM_URL=http://127.0.0.1:8090/scan \\
+GPIO_AGENT_URL=http://127.0.0.1:8070 \\
+python3 pi/tk_app.py
+```
+
+Face-only mode:
+```
+UI_MODE=face python3 pi/tk_app.py
+```
