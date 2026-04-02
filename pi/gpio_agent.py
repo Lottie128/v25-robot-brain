@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
 import os
+import signal
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOST = "0.0.0.0"
@@ -85,8 +87,27 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    if GPIO is None:
+        print(f"GPIO unavailable: {GPIO_ERROR}", file=sys.stderr)
+    def cleanup(*_):
+        if GPIO is None:
+            sys.exit(0)
+        for pin in RELAY_GPIO[:4] + MOTOR_GPIO[:4]:
+            try:
+                GPIO.output(pin, GPIO.LOW)
+            except Exception:
+                pass
+        GPIO.cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+
     server = HTTPServer((HOST, PORT), Handler)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        cleanup()
 
 
 if __name__ == "__main__":
