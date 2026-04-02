@@ -36,6 +36,10 @@ const OPENAI_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-m
 const OPENAI_VOICE_ID = process.env.OPENAI_VOICE_ID || "";
 const CAMERA_STREAM_URL = process.env.CAMERA_STREAM_URL || "";
 const LIDAR_STREAM_URL = process.env.LIDAR_STREAM_URL || "";
+const PI_GPIO_AGENT_URL = process.env.PI_GPIO_AGENT_URL || "";
+const FAST_MODE = process.env.FAST_MODE ? process.env.FAST_MODE === "1" : true;
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || (FAST_MODE ? 120 : 240));
+const TRANSCRIBE_LANGUAGE = process.env.TRANSCRIBE_LANGUAGE || "";
 const RELAY_GPIO = (process.env.RELAY_GPIO || "17,27,22,23")
   .split(",")
   .map((v) => Number(v.trim()))
@@ -118,7 +122,9 @@ async function handleChat(req, res) {
     return;
   }
 
-  const history = Array.isArray(payload.history) ? payload.history.slice(-12) : [];
+  const history = Array.isArray(payload.history)
+    ? payload.history.slice(FAST_MODE ? -6 : -12)
+    : [];
   const input = history.map((m) => ({
     role: m.role === "assistant" ? "assistant" : "user",
     content: String(m.content || "")
@@ -128,7 +134,8 @@ async function handleChat(req, res) {
     model: OPENAI_MODEL,
     instructions: SYSTEM_INSTRUCTIONS,
     input,
-    temperature: 0.7
+    temperature: 0.7,
+    max_output_tokens: MAX_OUTPUT_TOKENS
   };
 
   const apiRes = await fetch("https://api.openai.com/v1/responses", {
@@ -214,6 +221,7 @@ async function handleTranscribe(req, res) {
   const blob = new Blob([audioBuffer], { type: contentType });
   form.append("file", blob, "audio.webm");
   form.append("model", OPENAI_TRANSCRIBE_MODEL);
+  if (TRANSCRIBE_LANGUAGE) form.append("language", TRANSCRIBE_LANGUAGE);
 
   const apiRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -234,6 +242,10 @@ async function handleTranscribe(req, res) {
 }
 
 async function handleEmotion(req, res) {
+  if (FAST_MODE) {
+    sendJson(res, 200, { emotion: "neutral" });
+    return;
+  }
   if (!OPENAI_API_KEY) {
     sendJson(res, 500, { error: "Missing OPENAI_API_KEY" });
     return;
@@ -281,6 +293,10 @@ async function handleEmotion(req, res) {
   sendJson(res, 200, { emotion: label });
 }
 
+async function handleConfig(req, res) {
+  sendJson(res, 200, { fastMode: FAST_MODE });
+}
+
 async function handleRelay(req, res) {
   let payload = {};
   try {
@@ -294,6 +310,21 @@ async function handleRelay(req, res) {
   const state = String(payload.state || "").toLowerCase();
   if (!Number.isFinite(id) || id < 1 || id > 4 || !["on", "off"].includes(state)) {
     sendJson(res, 400, { error: "Invalid relay request" });
+    return;
+  }
+
+  if (PI_GPIO_AGENT_URL) {
+    const agentRes = await fetch(`${PI_GPIO_AGENT_URL}/relay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, state })
+    });
+    const text = await agentRes.text();
+    if (!agentRes.ok) {
+      sendJson(res, agentRes.status, { error: text || "GPIO agent error" });
+      return;
+    }
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -327,6 +358,21 @@ async function handleMotor(req, res) {
   const action = String(payload.action || "").toLowerCase();
   if (!["forward", "back", "left", "right", "stop"].includes(action)) {
     sendJson(res, 400, { error: "Invalid motor action" });
+    return;
+  }
+
+  if (PI_GPIO_AGENT_URL) {
+    const agentRes = await fetch(`${PI_GPIO_AGENT_URL}/motor`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action })
+    });
+    const text = await agentRes.text();
+    if (!agentRes.ok) {
+      sendJson(res, agentRes.status, { error: text || "GPIO agent error" });
+      return;
+    }
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -416,6 +462,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/api/emotion") {
     await handleEmotion(req, res);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/config") {
+    await handleConfig(req, res);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/relay") {

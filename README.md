@@ -53,3 +53,20 @@ npm install onoff
 Endpoints:
 - `POST /api/relay` `{ "id": 1-4, "state": "on"|"off" }`
 - `POST /api/motor` `{ "action": "forward"|"back"|"left"|"right"|"stop" }`
+
+## Mac Brain + Pi GPIO Agent (Recommended)
+
+When the server runs on your Mac, GPIO must run on the Pi. Use the agent:
+
+On the Pi:
+```
+sudo apt install -y python3-rpi.gpio
+python3 pi/gpio_agent.py
+```
+
+On the Mac `.env`:
+```
+PI_GPIO_AGENT_URL=http://192.168.1.50:8070
+```
+
+The Mac server will forward `/api/relay` and `/api/motor` to the Pi agent.

@@ -10,6 +10,7 @@ const cameraFeed = document.getElementById("cameraFeed");
 const cameraFallback = document.getElementById("cameraFallback");
 const lidarCanvas = document.getElementById("lidarCanvas");
 const lidarFallback = document.getElementById("lidarFallback");
+let fastMode = false;
 const urlParams = new URLSearchParams(window.location.search);
 const mode = urlParams.get("mode");
 
@@ -170,22 +171,24 @@ async function sendChat(text) {
   history.push({ role: "assistant", content: reply });
   addBubble("assistant", reply);
 
-  try {
-    const emoRes = await fetch("/api/emotion", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: reply })
-    });
-    if (emoRes.ok) {
-      const emoData = await emoRes.json();
-      const label = (emoData.emotion || "neutral").toLowerCase();
-      document.body.className = document.body.className
-        .split(" ")
-        .filter((c) => !c.startsWith("emotion-"))
-        .join(" ");
-      document.body.classList.add(`emotion-${label}`);
-    }
-  } catch {}
+  if (!fastMode) {
+    try {
+      const emoRes = await fetch("/api/emotion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: reply })
+      });
+      if (emoRes.ok) {
+        const emoData = await emoRes.json();
+        const label = (emoData.emotion || "neutral").toLowerCase();
+        document.body.className = document.body.className
+          .split(" ")
+          .filter((c) => !c.startsWith("emotion-"))
+          .join(" ");
+        document.body.classList.add(`emotion-${label}`);
+      }
+    } catch {}
+  }
 
   setStatus("speaking");
   try {
@@ -426,3 +429,10 @@ initLidar();
 if (!document.body.classList.contains("face-only")) {
   addBubble("assistant", "V25 online. Ready for commands.");
 }
+
+fetch("/api/config")
+  .then((res) => res.json())
+  .then((cfg) => {
+    fastMode = Boolean(cfg.fastMode);
+  })
+  .catch(() => {});
