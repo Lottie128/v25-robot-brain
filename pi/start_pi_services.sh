@@ -4,21 +4,35 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Export optional GPIO pins / ports if provided
-export RELAY_GPIO="${RELAY_GPIO:-17,27,22,23}"
-export MOTOR_GPIO="${MOTOR_GPIO:-13,20,19,21}"
-export GPIO_AGENT_PORT="${GPIO_AGENT_PORT:-8070}"
+# Source .env for variables like RPLIDAR_PORT, GPIOs, etc.
+if [ -f "pi/.env" ]; then
+  export $(grep -v '^#' pi/.env | xargs)
+fi
+
+# Use venv python
+PYTHON="$ROOT_DIR/.venv/bin/python"
 
 # Start services in background
-python3 pi/camera_server.py &
+$PYTHON pi/camera_server.py &
 CAM_PID=$!
 
-python3 pi/lidar_server.py &
+$PYTHON pi/lidar_server.py &
 LIDAR_PID=$!
 
-python3 pi/gpio_agent.py &
+$PYTHON pi/gpio_agent.py &
 GPIO_PID=$!
 
-trap 'kill $CAM_PID $LIDAR_PID $GPIO_PID 2>/dev/null' INT TERM
+# Hide mouse cursor
+unclutter -idle 0 &
+UNCLUTTER_PID=$!
 
-wait $CAM_PID $LIDAR_PID $GPIO_PID
+# Start Chromium Face UI in Kiosk Mode
+# Note: Use full path for index.html to avoid relativity issues
+chromium-browser --kiosk --no-sandbox --incognito \
+  --disable-infobars --window-size=800,480 \
+  "file://$ROOT_DIR/pi/face-ui/index.html" &
+FACE_PID=$!
+
+trap 'kill $CAM_PID $LIDAR_PID $GPIO_PID $FACE_PID $UNCLUTTER_PID 2>/dev/null' INT TERM
+
+wait $CAM_PID $LIDAR_PID $GPIO_PID $FACE_PID $UNCLUTTER_PID

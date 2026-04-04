@@ -11,6 +11,7 @@ const cameraFallback = document.getElementById("cameraFallback");
 const lidarCanvas = document.getElementById("lidarCanvas");
 const lidarFallback = document.getElementById("lidarFallback");
 let fastMode = false;
+let piConfig = { gpioAgentUrl: "", cameraStreamUrl: "", lidarStreamUrl: "" };
 const urlParams = new URLSearchParams(window.location.search);
 const mode = urlParams.get("mode");
 
@@ -19,69 +20,122 @@ if (mode === "face") {
 }
 
 async function initCamera() {
+  if (initCamera.started) return;
+  initCamera.started = true;
   if (!cameraFeed) return;
-  cameraFeed.src = "/api/camera";
-  cameraFeed.addEventListener("load", () => {
-    cameraFeed.style.display = "block";
-    if (cameraFallback) cameraFallback.style.display = "none";
-  });
+  
+  // Prefer direct URL if reachable from browser, fallback to proxy
+  const proxyUrl = "/api/camera";
+  const directUrl = piConfig.cameraStreamUrl;
+  
+  cameraFeed.src = directUrl || proxyUrl;
+  cameraFeed.style.display = "block";
+  if (cameraFallback) cameraFallback.style.display = "none";
+
   cameraFeed.addEventListener("error", () => {
-    cameraFeed.style.display = "none";
-    if (cameraFallback) cameraFallback.style.display = "block";
+    // If direct failed, try proxy
+    if (cameraFeed.src.startsWith("http") && !cameraFeed.src.includes(window.location.host)) {
+      console.warn("Direct camera feed failed, falling back to proxy...");
+      cameraFeed.src = proxyUrl;
+    } else {
+      cameraFeed.style.display = "none";
+      if (cameraFallback) cameraFallback.style.display = "block";
+    }
   });
 }
 
 function initLidar() {
+  if (initLidar.started) return;
+  initLidar.started = true;
   if (!lidarCanvas) return;
   const ctx = lidarCanvas.getContext("2d");
   let latestPoints = [];
+  let size = { w: 320, h: 320 };
+  lidarCanvas.style.display = "block";
+  if (lidarFallback) lidarFallback.style.display = "none";
 
-  const es = new EventSource("/api/lidar");
-  es.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      latestPoints = Array.isArray(data.points) ? data.points : [];
-      lidarCanvas.style.display = "block";
-      if (lidarFallback) lidarFallback.style.display = "none";
-    } catch {}
-  };
-  es.onerror = () => {
-    lidarCanvas.style.display = "none";
-    if (lidarFallback) lidarFallback.style.display = "block";
-  };
+  function resize() {
+    const parent = lidarCanvas.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const side = Math.min(rect.width, rect.height);
+    lidarCanvas.width = Math.round(side * dpr);
+    lidarCanvas.height = Math.round(side * dpr);
+    lidarCanvas.style.width = `${side}px`;
+    lidarCanvas.style.height = `${side}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    size = { w: side, h: side };
+  }
+
+  window.addEventListener("resize", resize);
+  resize();
+
+  // Prefer direct URL for SSE, fallback to proxy
+  const proxyUrl = "/api/lidar";
+  const directUrl = piConfig.lidarStreamUrl;
+  
+  function connectLidar(url) {
+    console.log("Connecting to LiDAR SSE:", url);
+    const es = new EventSource(url);
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.points) {
+          latestPoints = data.points;
+          if (lidarFallback) lidarFallback.style.display = "none";
+        }
+      } catch (e) {}
+    };
+    es.onerror = () => {
+      if (url === directUrl && proxyUrl) {
+        console.warn("Direct LiDAR SSE failed, falling back to proxy...");
+        es.close();
+        connectLidar(proxyUrl);
+      } else {
+        if (lidarFallback) lidarFallback.style.display = "grid";
+      }
+    };
+  }
+
+  connectLidar(directUrl || proxyUrl);
 
   function draw() {
-    const w = lidarCanvas.width;
-    const h = lidarCanvas.height;
+    const w = size.w;
+    const h = size.h;
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.45;
+
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "rgba(10, 18, 26, 0.9)";
+    ctx.fillStyle = "rgba(6, 12, 18, 0.92)";
     ctx.fillRect(0, 0, w, h);
-    const radius = h * 0.9;
-    ctx.strokeStyle = "rgba(126, 245, 234, 0.12)";
+
+    ctx.strokeStyle = "rgba(126, 245, 234, 0.14)";
     for (let r = radius / 4; r <= radius; r += radius / 4) {
       ctx.beginPath();
-      ctx.arc(w / 2, h, r, Math.PI, 2 * Math.PI);
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.strokeStyle = "rgba(126, 245, 234, 0.08)";
-    for (let a = 0; a <= 180; a += 30) {
+    for (let a = 0; a < 360; a += 30) {
       const ang = (a * Math.PI) / 180;
       ctx.beginPath();
-      ctx.moveTo(w / 2, h);
-      ctx.lineTo(w / 2 + Math.cos(Math.PI - ang) * radius, h - Math.sin(Math.PI - ang) * radius);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(ang) * radius, cy + Math.sin(ang) * radius);
       ctx.stroke();
     }
 
-    ctx.fillStyle = "rgba(29, 214, 195, 0.8)";
-    const maxDist = 2000;
+    ctx.fillStyle = "rgba(29, 214, 195, 0.9)";
+    const maxDist = 4000;
     const clusters = [];
     for (const pt of latestPoints) {
-      const angle = (pt[0] * Math.PI) / 180;
+      const angle = ((pt[0] - 90) * Math.PI) / 180;
       const dist = Math.min(maxDist, pt[1]);
       const r = (dist / maxDist) * radius;
-      const x = w / 2 + Math.cos(Math.PI - angle) * r;
-      const y = h - Math.sin(Math.PI - angle) * r;
-      ctx.fillRect(x, y, 2, 2);
+      const x = cx + Math.cos(angle) * r;
+      const y = cy + Math.sin(angle) * r;
+      ctx.fillRect(x - 1, y - 1, 2, 2);
 
       const near = clusters.find((c) => Math.hypot(c.x - x, c.y - y) < 10);
       if (near) {
@@ -93,7 +147,7 @@ function initLidar() {
       }
     }
 
-    ctx.strokeStyle = "rgba(255, 138, 61, 0.7)";
+    ctx.strokeStyle = "rgba(255, 138, 61, 0.6)";
     for (const c of clusters) {
       if (c.count < 6) continue;
       const size = Math.min(16, 4 + c.count);
@@ -130,7 +184,12 @@ function setStatus(text) {
 }
 
 function pulseWave(active) {
-  waveEl.style.opacity = active ? 0.9 : 0.4;
+  if (!waveEl) return;
+  if (active) {
+    waveEl.classList.add("active");
+  } else {
+    waveEl.classList.remove("active");
+  }
 }
 
 async function speak(text) {
@@ -321,7 +380,7 @@ function stopRecording() {
   micBtn.classList.remove("active");
 }
 
-micBtn.addEventListener("click", async () => {
+micBtn?.addEventListener("click", async () => {
   if (isRecording) {
     stopRecording();
   } else {
@@ -334,13 +393,13 @@ micBtn.addEventListener("click", async () => {
   }
 });
 
-sendBtn.addEventListener("click", () => {
+sendBtn?.addEventListener("click", () => {
   const text = textInput.value;
   textInput.value = "";
   sendChat(text);
 });
 
-wakeToggle.addEventListener("click", async () => {
+wakeToggle?.addEventListener("click", async () => {
   wakeMode = !wakeMode;
   wakeToggle.classList.toggle("on", wakeMode);
   wakeToggle.textContent = wakeMode ? "Wake: on" : "Wake: off";
@@ -362,7 +421,7 @@ wakeToggle.addEventListener("click", async () => {
   }
 });
 
-textInput.addEventListener("keydown", (event) => {
+textInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     const text = textInput.value;
     textInput.value = "";
@@ -381,8 +440,9 @@ document.querySelectorAll(".toggle[data-relay]").forEach((btn) => {
   btn.addEventListener("click", async () => {
     const id = Number(btn.dataset.relay);
     const nextOn = !btn.classList.contains("on");
+    const relayUrl = piConfig.gpioAgentUrl ? `${piConfig.gpioAgentUrl}/relay` : "/api/relay";
     try {
-      const res = await fetch("/api/relay", {
+      const res = await fetch(relayUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, state: nextOn ? "on" : "off" })
@@ -390,28 +450,42 @@ document.querySelectorAll(".toggle[data-relay]").forEach((btn) => {
       if (!res.ok) throw new Error(await res.text());
       btn.classList.toggle("on", nextOn);
       btn.textContent = nextOn ? "on" : "off";
+      setStatus("online");
     } catch (err) {
       addBubble("assistant", "Relay error: " + err.message);
+      setStatus("offline");
     }
   });
 });
 
 document.querySelectorAll(".motion-btn[data-action]").forEach((btn) => {
   const action = btn.dataset.action;
+  const motorUrl = () => (piConfig.gpioAgentUrl ? `${piConfig.gpioAgentUrl}/motor` : "/api/motor");
   const start = async () => {
     if (action === "stop") return;
-    await fetch("/api/motor", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action })
-    });
+    try {
+      await fetch(motorUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action })
+      });
+      setStatus("online");
+    } catch (err) {
+      addBubble("assistant", "Motor error: " + (err.message || "Failed to fetch"));
+      setStatus("offline");
+    }
   };
   const stop = async () => {
-    await fetch("/api/motor", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "stop" })
-    });
+    try {
+      await fetch(motorUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" })
+      });
+      setStatus("online");
+    } catch (err) {
+      setStatus("offline");
+    }
   };
 
   btn.addEventListener("pointerdown", start);
@@ -423,16 +497,37 @@ document.querySelectorAll(".motion-btn[data-action]").forEach((btn) => {
 updateClock();
 setInterval(updateClock, 10000);
 setStatus("idle");
-initCamera();
-initLidar();
 
 if (!document.body.classList.contains("face-only")) {
   addBubble("assistant", "V25 online. Ready for commands.");
+}
+
+async function checkPiDirect() {
+  const piIp = "192.168.1.35";
+  try {
+    const res = await fetch(`http://${piIp}:8070/relay`, { method: "OPTIONS" });
+    console.log("Direct Pi access check:", res.ok ? "SUCCESS" : "FAILED (but reachable)");
+  } catch (err) {
+    console.warn("Direct Pi access check: FAILED (unreachable from browser)", err.message);
+  }
 }
 
 fetch("/api/config")
   .then((res) => res.json())
   .then((cfg) => {
     fastMode = Boolean(cfg.fastMode);
+    if (cfg && cfg.pi) {
+      piConfig = {
+        gpioAgentUrl: cfg.pi.gpioAgentUrl || "",
+        cameraStreamUrl: cfg.pi.cameraStreamUrl || "",
+        lidarStreamUrl: cfg.pi.lidarStreamUrl || ""
+      };
+    }
+    initCamera();
+    initLidar();
+    checkPiDirect();
   })
-  .catch(() => {});
+  .catch(() => {
+    initCamera();
+    initLidar();
+  });

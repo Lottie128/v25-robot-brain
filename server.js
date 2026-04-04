@@ -19,14 +19,19 @@ function loadDotEnv() {
     if (idx === -1) continue;
     const key = line.slice(0, idx).trim();
     const val = line.slice(idx + 1).trim();
-    if (!key || process.env[key]) continue;
+    if (!key) continue;
     process.env[key] = val;
   }
 }
 
 loadDotEnv();
+console.log("Loaded CONFIG:");
+console.log("  CAMERA_STREAM_URL:", process.env.CAMERA_STREAM_URL);
+console.log("  LIDAR_STREAM_URL: ", process.env.LIDAR_STREAM_URL);
+console.log("  PI_GPIO_AGENT_URL:", process.env.PI_GPIO_AGENT_URL);
 
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -37,6 +42,7 @@ const OPENAI_VOICE_ID = process.env.OPENAI_VOICE_ID || "";
 const CAMERA_STREAM_URL = process.env.CAMERA_STREAM_URL || "";
 const LIDAR_STREAM_URL = process.env.LIDAR_STREAM_URL || "";
 const PI_GPIO_AGENT_URL = process.env.PI_GPIO_AGENT_URL || "";
+
 const FAST_MODE = process.env.FAST_MODE ? process.env.FAST_MODE === "1" : true;
 const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || (FAST_MODE ? 120 : 240));
 const TRANSCRIBE_LANGUAGE = process.env.TRANSCRIBE_LANGUAGE || "";
@@ -73,7 +79,10 @@ const relayPins = [];
 const motorPins = [];
 if (Gpio) {
   for (const pin of RELAY_GPIO.slice(0, 4)) {
-    relayPins.push(new Gpio(pin, "out"));
+    const gpio = new Gpio(pin, "out");
+    // Active-low relays: default OFF is HIGH.
+    gpio.writeSync(1);
+    relayPins.push(gpio);
   }
   for (const pin of MOTOR_GPIO.slice(0, 4)) {
     motorPins.push(new Gpio(pin, "out"));
@@ -297,7 +306,14 @@ async function handleEmotion(req, res) {
 }
 
 async function handleConfig(req, res) {
-  sendJson(res, 200, { fastMode: FAST_MODE });
+  sendJson(res, 200, {
+    fastMode: FAST_MODE,
+    pi: {
+      gpioAgentUrl: PI_GPIO_AGENT_URL || "",
+      cameraStreamUrl: CAMERA_STREAM_URL || "",
+      lidarStreamUrl: LIDAR_STREAM_URL || ""
+    }
+  });
 }
 
 async function handleRelay(req, res) {
@@ -317,18 +333,25 @@ async function handleRelay(req, res) {
   }
 
   if (PI_GPIO_AGENT_URL) {
-    const agentRes = await fetch(`${PI_GPIO_AGENT_URL}/relay`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, state })
-    });
-    const text = await agentRes.text();
-    if (!agentRes.ok) {
-      sendJson(res, agentRes.status, { error: text || "GPIO agent error" });
+    try {
+      const agentRes = await fetch(`${PI_GPIO_AGENT_URL}/relay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, state })
+      });
+      const text = await agentRes.text();
+      if (!agentRes.ok) {
+        console.error(`GPIO agent error: ${agentRes.status} ${text}`);
+        sendJson(res, agentRes.status, { error: text || "GPIO agent error" });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
+      return;
+    } catch (err) {
+      console.error(`GPIO agent unreachable at ${PI_GPIO_AGENT_URL}:`, err.message);
+      sendJson(res, 502, { error: "GPIO agent unreachable" });
       return;
     }
-    sendJson(res, 200, { ok: true });
-    return;
   }
 
   if (!relayPins.length) {
@@ -337,7 +360,8 @@ async function handleRelay(req, res) {
   }
 
   const pin = relayPins[id - 1];
-  await pin.write(state === "on" ? 1 : 0);
+  // Active-low relays: ON=0, OFF=1
+  await pin.write(state === "on" ? 0 : 1);
   sendJson(res, 200, { ok: true });
 }
 
@@ -365,18 +389,25 @@ async function handleMotor(req, res) {
   }
 
   if (PI_GPIO_AGENT_URL) {
-    const agentRes = await fetch(`${PI_GPIO_AGENT_URL}/motor`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action })
-    });
-    const text = await agentRes.text();
-    if (!agentRes.ok) {
-      sendJson(res, agentRes.status, { error: text || "GPIO agent error" });
+    try {
+      const agentRes = await fetch(`${PI_GPIO_AGENT_URL}/motor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action })
+      });
+      const text = await agentRes.text();
+      if (!agentRes.ok) {
+        console.error(`GPIO agent motor error: ${agentRes.status} ${text}`);
+        sendJson(res, agentRes.status, { error: text || "GPIO agent error" });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
+      return;
+    } catch (err) {
+      console.error(`GPIO agent unreachable at ${PI_GPIO_AGENT_URL}:`, err.message);
+      sendJson(res, 502, { error: "GPIO agent unreachable" });
       return;
     }
-    sendJson(res, 200, { ok: true });
-    return;
   }
 
   if (!motorPins.length) {
@@ -399,16 +430,33 @@ async function handleCameraProxy(req, res) {
     res.end("Camera not configured");
     return;
   }
-  const camRes = await fetch(CAMERA_STREAM_URL);
-  if (!camRes.ok || !camRes.body) {
+  try {
+    const camUrl = new URL(CAMERA_STREAM_URL);
+    const options = {
+      hostname: camUrl.hostname,
+      port: camUrl.port,
+      path: camUrl.pathname,
+      method: "GET",
+      timeout: 5000
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on("error", (err) => {
+      console.error(`Camera proxy error at ${CAMERA_STREAM_URL}:`, err.message);
+      res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Camera unavailable");
+    });
+
+    proxyReq.end();
+  } catch (err) {
+    console.error(`Camera proxy setup error at ${CAMERA_STREAM_URL}:`, err.message);
     res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Camera unavailable");
-    return;
   }
-  res.writeHead(200, {
-    "Content-Type": camRes.headers.get("content-type") || "multipart/x-mixed-replace; boundary=frame"
-  });
-  await pipeline(Readable.fromWeb(camRes.body), res);
 }
 
 async function handleLidarProxy(req, res) {
@@ -417,18 +465,33 @@ async function handleLidarProxy(req, res) {
     res.end("Lidar not configured");
     return;
   }
-  const lidarRes = await fetch(LIDAR_STREAM_URL);
-  if (!lidarRes.ok || !lidarRes.body) {
+  try {
+    const lidarUrl = new URL(LIDAR_STREAM_URL);
+    const options = {
+      hostname: lidarUrl.hostname,
+      port: lidarUrl.port,
+      path: lidarUrl.pathname,
+      method: "GET",
+      timeout: 5000
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on("error", (err) => {
+      console.error(`Lidar proxy error at ${LIDAR_STREAM_URL}:`, err.message);
+      res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Lidar unavailable");
+    });
+
+    proxyReq.end();
+  } catch (err) {
+    console.error(`Lidar proxy setup error at ${LIDAR_STREAM_URL}:`, err.message);
     res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Lidar unavailable");
-    return;
   }
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive"
-  });
-  await pipeline(Readable.fromWeb(lidarRes.body), res);
 }
 
 async function serveStatic(req, res) {
@@ -449,7 +512,9 @@ async function serveStatic(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const host = req.headers.host || `localhost:${PORT}`;
+  const url = new URL(req.url, `http://${host}`);
+  console.log(`[${req.method}] ${url.pathname}`);
 
   if (req.method === "POST" && url.pathname === "/api/chat") {
     await handleChat(req, res);
@@ -491,6 +556,6 @@ const server = http.createServer(async (req, res) => {
   await serveStatic(req, res);
 });
 
-server.listen(PORT, () => {
-  console.log(`V25 running at http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`V25 running at http://${HOST}:${PORT}`);
 });

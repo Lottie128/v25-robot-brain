@@ -26,10 +26,12 @@ output = StreamingOutput()
 
 class StreamingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != "/stream.mjpg":
+        # Allow / or /stream.mjpg to serve the stream
+        if self.path not in ["/stream.mjpg", "/"]:
             self.send_error(404)
             return
         self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
         try:

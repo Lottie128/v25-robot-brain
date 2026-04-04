@@ -1,0 +1,89 @@
+:root {
+  --bg-color: #05070a;
+  --socket-color: #f0f8ff;
+  --socket-glow: rgba(126, 245, 234, 0.4);
+  --iris-color: #1dd6c3;
+  --iris-dark: #16a091;
+  --pupil-color: #05070a;
+  --lid-color: #05070a;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-color);
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.face-container {
+  display: flex;
+  gap: 120px;
+  width: 100%;
+  justify-content: center;
+}
+
+.eye {
+  width: 200px;
+  height: 200px;
+  position: relative;
+}
+
+.socket-glow {
+  fill: var(--socket-glow);
+  filter: blur(8px);
+}
+
+.socket {
+  fill: var(--socket-color);
+  stroke: var(--iris-color);
+  stroke-width: 1;
+}
+
+.iris {
+  fill: var(--iris-color);
+  filter: drop-shadow(0 0 5px var(--iris-color));
+}
+
+.iris-detail {
+  fill: var(--iris-dark);
+  opacity: 0.6;
+}
+
+.pupil {
+  fill: var(--pupil-color);
+}
+
+.glint {
+  fill: #ffffff;
+  opacity: 0.9;
+}
+
+.glint.sub {
+  opacity: 0.4;
+}
+
+/* Lid animations handled via JS for randomized timing, but CSS for transitions */
+.lid-top, .lid-bottom {
+  fill: var(--lid-color);
+  transition: height 0.08s ease-in-out;
+}
+
+/* Randomized Saccades (Subtle life-like jitter) */
+.iris-group {
+  transition: transform 0.1s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes saccade {
+  0%, 100% { transform: translate(0, 0); }
+  25% { transform: translate(1px, -1px); }
+  50% { transform: translate(-1px, 1px); }
+  75% { transform: translate(1px, 1.5px); }
+}
+
+.iris-group.jitter {
+  animation: saccade 0.1s infinite alternate;
+}

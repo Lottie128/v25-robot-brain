@@ -16,7 +16,11 @@ try:
     GPIO.setmode(GPIO.BCM)
     for pin in RELAY_GPIO[:4] + MOTOR_GPIO[:4]:
         GPIO.setup(pin, GPIO.OUT)
-        GPIO.output(pin, GPIO.LOW)
+        # Relays are active-low; default OFF is HIGH.
+        if pin in RELAY_GPIO[:4]:
+            GPIO.output(pin, GPIO.HIGH)
+        else:
+            GPIO.output(pin, GPIO.LOW)
 except Exception as e:
     GPIO = None
     GPIO_ERROR = str(e)
@@ -33,10 +37,22 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.end_headers()
 
     def do_POST(self):
         if GPIO is None:
@@ -58,7 +74,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "Invalid relay request"})
                 return
             pin = RELAY_GPIO[relay_id - 1]
-            GPIO.output(pin, GPIO.HIGH if state == "on" else GPIO.LOW)
+            # Active-low relays: ON=LOW, OFF=HIGH
+            GPIO.output(pin, GPIO.LOW if state == "on" else GPIO.HIGH)
             self._json(200, {"ok": True})
             return
 

@@ -3,20 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>V25</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <title>V25 / NEURAL LINK</title>
+    <link rel="stylesheet" href="/styles.css?v=2" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;800&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div class="screen">
       <header class="top-bar">
         <div class="brand">
-          <span class="brand-mark"></span>
+          <div class="brand-mark"></div>
           <div>
             <div class="brand-title">V25</div>
-            <div class="brand-sub">robot brain</div>
+            <div class="brand-sub">Neural Interface</div>
           </div>
         </div>
         <div class="status">
@@ -27,89 +27,77 @@
       </header>
 
       <main class="core">
-        <section class="face">
-          <div class="halo"></div>
-          <div class="eyes">
-            <div class="eye"><span class="pupil"></span></div>
-            <div class="eye"><span class="pupil"></span></div>
-          </div>
-          <div class="wave" id="wave"></div>
-          <div class="face-label">V25 / neural link ready</div>
-        </section>
-
-        <section class="left-panel">
+        <aside class="left-panel">
           <div class="card">
-            <div class="card-title">Systems</div>
+            <div class="card-title">Hardware Status</div>
             <div class="stat-grid">
               <div class="stat"><div class="stat-label">CPU</div><div class="stat-value">34%</div></div>
               <div class="stat"><div class="stat-label">Temp</div><div class="stat-value">52°C</div></div>
-              <div class="stat"><div class="stat-label">Battery</div><div class="stat-value">92%</div></div>
-              <div class="stat"><div class="stat-label">Link</div><div class="stat-value ok">secure</div></div>
+              <div class="stat"><div class="stat-label">Signal</div><div class="stat-value">-64dBm</div></div>
+              <div class="stat"><div class="stat-label">Link</div><div class="stat-value" style="color:var(--accent)">stable</div></div>
             </div>
           </div>
 
           <div class="card">
-            <div class="card-title">Relays</div>
+            <div class="card-title">Relay Modules</div>
             <div class="relay-grid">
               <div class="relay"><span>Water pump</span><button class="toggle off" data-relay="1">off</button></div>
-              <div class="relay"><span>Fertilizer / minerals</span><button class="toggle off" data-relay="2">off</button></div>
+              <div class="relay"><span>Mineral injection</span><button class="toggle off" data-relay="2">off</button></div>
               <div class="relay"><span>Blue lights</span><button class="toggle off" data-relay="3">off</button></div>
               <div class="relay"><span>Bottom lights</span><button class="toggle off" data-relay="4">off</button></div>
             </div>
           </div>
 
           <div class="card">
-            <div class="card-title">Motion</div>
+            <div class="card-title">Kinematics</div>
             <div class="motion-pad">
               <button class="motion-btn" data-action="forward">↑</button>
-              <div class="motion-row">
-                <button class="motion-btn" data-action="left">←</button>
-                <button class="motion-btn stop" data-action="stop">■</button>
-                <button class="motion-btn" data-action="right">→</button>
-              </div>
+              <button class="motion-btn" data-action="left">←</button>
+              <button class="motion-btn stop" data-action="stop">■</button>
+              <button class="motion-btn" data-action="right">→</button>
               <button class="motion-btn" data-action="back">↓</button>
             </div>
-            <div class="motion-note">momentary control</div>
           </div>
-        </section>
+        </aside>
 
         <section class="media-panel">
           <div class="media-card">
-            <div class="card-title">Camera feed</div>
+            <div class="card-title">Visual Cortex <div class="wave" id="wave"></div></div>
             <div class="media-frame">
-              <img id="cameraFeed" alt="Pi camera feed" />
-              <div class="media-fallback" id="cameraFallback">standby</div>
+              <img id="cameraFeed" alt="Feed" />
+              <div class="media-fallback" id="cameraFallback">no visual data</div>
             </div>
           </div>
 
           <div class="media-card">
-            <div class="card-title">LiDAR 2m</div>
+            <div class="card-title">Spatial Scan (LiDAR)</div>
             <div class="media-frame lidar">
-              <canvas id="lidarCanvas" width="420" height="180"></canvas>
-              <div class="media-fallback" id="lidarFallback">scan idle</div>
+              <canvas id="lidarCanvas"></canvas>
+              <div class="media-fallback" id="lidarFallback">scanning idle</div>
             </div>
           </div>
         </section>
 
-        <section class="chat-panel">
-          <div class="chat-card" id="transcript"></div>
-        </section>
+        <aside class="chat-panel">
+          <div class="chat-card">
+            <div class="card-title">Neural Logs</div>
+            <div id="transcript"></div>
+          </div>
+        </aside>
       </main>
 
       <footer class="controls">
         <button class="mic" id="mic">
-          <span class="mic-ring"></span>
           <span class="mic-core"></span>
-          <span class="mic-label">talk</span>
         </button>
         <div class="input-wrap">
-          <input id="textInput" type="text" placeholder="Say something to V25" />
+          <input id="textInput" type="text" placeholder="Issue a direct command..." />
           <button id="wakeToggle" class="wake">Wake: off</button>
-          <button id="send" class="send">Send</button>
+          <button id="send" class="send">Execute</button>
         </div>
       </footer>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=2"></script>
   </body>
 </html>

@@ -20,9 +20,13 @@ CAMERA_STREAM_URL = os.environ.get("CAMERA_STREAM_URL", "http://127.0.0.1:8080/s
 LIDAR_STREAM_URL = os.environ.get("LIDAR_STREAM_URL", "http://127.0.0.1:8090/scan")
 GPIO_AGENT_URL = os.environ.get("GPIO_AGENT_URL", "http://127.0.0.1:8070")
 UI_MODE = os.environ.get("UI_MODE", "full")  # full or face
+AUTO_LISTEN = os.environ.get("AUTO_LISTEN", "0") == "1"
+WAKE_WORD = os.environ.get("WAKE_WORD", "v25").lower()
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
+CHUNK_SECONDS = float(os.environ.get("CHUNK_SECONDS", "2.0"))
+SILENCE_RMS = float(os.environ.get("SILENCE_RMS", "0.01"))
 
 @dataclass
 class EmotionStyle:
@@ -45,18 +49,49 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title("V25")
-        self.root.configure(bg="#0b0f14")
+        self.root.configure(bg="#05070a")
+        
+        # Initial fullscreen attempt
         self.root.attributes("-fullscreen", True)
+        self.root.attributes("-topmost", True)
+        self.root.config(cursor="none")
+        
+        # Robustness: Re-apply fullscreen and focus after window is mapped
         self.root.bind("<Escape>", lambda e: self.root.destroy())
+        self.root.bind("<F11>", lambda e: self.root.attributes("-fullscreen", not self.root.attributes("-fullscreen")))
+        
+        # Force focus and fullscreen after a short delay to ensure WM compliance
+        self.root.after(500, self._force_fullscreen)
 
         self.recording = False
         self.audio_q = queue.Queue()
         self.camera_img = None
         self.lidar_points = []
+        
+        # State for animations
+        self.blink_state = 0.0  # 0.0 = open, 1.0 = closed
+        self.look_x = 0.0
+        self.look_y = 0.0
+        self.current_emotion = "neutral"
 
         self._build_ui()
-        self._start_camera_thread()
-        self._start_lidar_thread()
+        if UI_MODE != "face":
+            self._start_camera_thread()
+            self._start_lidar_thread()
+        if AUTO_LISTEN:
+            self._start_auto_listen()
+        
+        # Start animation loops
+        self._animate()
+        self._schedule_blink()
+
+    def _force_fullscreen(self):
+        """Aggressively force fullscreen and focus"""
+        self.root.attributes("-fullscreen", True)
+        self.root.attributes("-topmost", True)
+        self.root.focus_force()
+        # Hide cursor again just in case
+        self.root.config(cursor="none")
 
     def _build_ui(self):
         if UI_MODE == "face":
@@ -65,9 +100,10 @@ class App:
             self._build_full()
 
     def _build_face_only(self):
-        self.face_canvas = tk.Canvas(self.root, bg="#0b0f14", highlightthickness=0)
+        self.face_canvas = tk.Canvas(self.root, bg="#05070a", highlightthickness=0)
         self.face_canvas.pack(fill="both", expand=True)
-        self._draw_face(self.face_canvas, full=True)
+        # Delay initial draw to ensure window dimensions are ready
+        self.root.after(100, lambda: self._draw_face(self.face_canvas, full=True))
 
     def _build_full(self):
         self.root.grid_columnconfigure(0, weight=2)
@@ -77,7 +113,28 @@ class App:
 
         self.face_canvas = tk.Canvas(self.root, bg="#0f1620", highlightthickness=0)
         self.face_canvas.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        self._draw_face(self.face_canvas, full=False)
+        self.root.after(100, lambda: self._draw_face(self.face_canvas, full=False))
+
+        self.media_frame = tk.Frame(self.root, bg="#0b0f14")
+        self.media_frame.grid(row=0, column=1, sticky="nsew", padx=6, pady=10)
+        self.media_frame.grid_rowconfigure(0, weight=1)
+        self.media_frame.grid_rowconfigure(1, weight=1)
+        self.media_frame.grid_columnconfigure(0, weight=1)
+
+        self.camera_label = tk.Label(self.media_frame, bg="#0b0f14")
+        self.camera_label.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+
+        self.lidar_canvas = tk.Canvas(self.media_frame, bg="#0b0f14", highlightthickness=0)
+        self.lidar_canvas.grid(row=1, column=0, sticky="nsew")
+
+        self.controls_frame = tk.Frame(self.root, bg="#0b0f14")
+        self.controls_frame.grid(row=0, column=2, sticky="nsew", padx=10, pady=10)
+
+        self._build_controls(self.controls_frame)
+
+        self.face_canvas = tk.Canvas(self.root, bg="#0f1620", highlightthickness=0)
+        self.face_canvas.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.root.after(100, lambda: self._draw_face(self.face_canvas, full=False))
 
         self.media_frame = tk.Frame(self.root, bg="#0b0f14")
         self.media_frame.grid(row=0, column=1, sticky="nsew", padx=6, pady=10)
@@ -123,36 +180,119 @@ class App:
 
     def _draw_face(self, canvas, full=False):
         canvas.delete("all")
-        w = canvas.winfo_width() or 800
-        h = canvas.winfo_height() or 480
-        cx = w / 2
-        cy = h / 2
-        eye_offset = 120 if full else 90
-        eye_size = 120 if full else 90
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        cx, cy = w / 2, h / 2
+        
+        eye_spacing = 160 if full else 110
+        eye_w = 140 if full else 100
+        eye_h = 100 if full else 75
+        
+        # Draw Left & Right Eyes
+        self._draw_eye(canvas, cx - eye_spacing, cy, eye_w, eye_h, "left")
+        self._draw_eye(canvas, cx + eye_spacing, cy, eye_w, eye_h, "right")
 
-        canvas.create_oval(cx - eye_offset - eye_size/2, cy - eye_size/2,
-                           cx - eye_offset + eye_size/2, cy + eye_size/2,
-                           outline="#7ef5ea", width=3, fill="#0c4947")
-        canvas.create_oval(cx + eye_offset - eye_size/2, cy - eye_size/2,
-                           cx + eye_offset + eye_size/2, cy + eye_size/2,
-                           outline="#7ef5ea", width=3, fill="#0c4947")
+    def _draw_eye(self, canvas, x, y, w, h, side):
+        # Socket shadow (outer glow feel)
+        canvas.create_oval(x - w/2 - 4, y - h/2 - 4, x + w/2 + 4, y + h/2 + 4, 
+                          fill="#0a0e14", outline="#1dd6c3", width=1)
+        
+        # Eye socket (Off-white)
+        canvas.create_oval(x - w/2, y - h/2, x + w/2, y + h/2, 
+                          fill="#f0f8ff", outline="#7ef5ea", width=2)
+        
+        # Iris (Gradients are hard in TK, so we use concentric circles)
+        iris_r = h * 0.42
+        # Add "saccades" (tiny rapid eye movements)
+        saccade_x = np.random.uniform(-0.01, 0.01)
+        saccade_y = np.random.uniform(-0.01, 0.01)
+        
+        iris_x = x + ((self.look_x + saccade_x) * (w/2 - iris_r))
+        iris_y = y + ((self.look_y + saccade_y) * (h/2 - iris_r))
+        
+        # Outer iris
+        canvas.create_oval(iris_x - iris_r, iris_y - iris_r, 
+                          iris_x + iris_r, iris_y + iris_r, 
+                          fill="#1dd6c3", outline="#0c4947", width=1)
+        
+        # Inner iris detail
+        canvas.create_oval(iris_x - iris_r*0.7, iris_y - iris_r*0.7, 
+                          iris_x + iris_r*0.7, iris_y + iris_r*0.7, 
+                          fill="#16a091", outline="")
+        
+        # Pupil
+        pupil_r = iris_r * 0.45
+        canvas.create_oval(iris_x - pupil_r, iris_y - pupil_r, 
+                          iris_x + pupil_r, iris_y + pupil_r, 
+                          fill="#05070a", outline="")
+        
+        # Glint (Main reflection)
+        glint_r = pupil_r * 0.6
+        canvas.create_oval(iris_x - pupil_r*0.7, iris_y - pupil_r*0.8,
+                          iris_x - pupil_r*0.7 + glint_r, iris_y - pupil_r*0.8 + glint_r,
+                          fill="#ffffff", outline="")
+        
+        # Secondary Glint (Subtle)
+        canvas.create_oval(iris_x + pupil_r*0.3, iris_y + pupil_r*0.4,
+                          iris_x + pupil_r*0.3 + glint_r*0.4, iris_y + pupil_r*0.4 + glint_r*0.4,
+                          fill="#ffffff", stipple="gray50", outline="")
 
-        pupil_size = 30 if full else 24
-        self.left_pupil = canvas.create_oval(cx - eye_offset - pupil_size/2, cy - pupil_size/2,
-                                             cx - eye_offset + pupil_size/2, cy + pupil_size/2,
-                                             fill="#1dd6c3", outline="")
-        self.right_pupil = canvas.create_oval(cx + eye_offset - pupil_size/2, cy - pupil_size/2,
-                                              cx + eye_offset + pupil_size/2, cy + pupil_size/2,
-                                              fill="#1dd6c3", outline="")
+        # Eyelids (Blink logic)
+        lid_color = "#05070a" if UI_MODE == "face" else "#0f1620"
+        
+        # Ease the blink curve (cos-based easing for organic feel)
+        eased_blink = (1 - cos(self.blink_state * pi)) / 2 if self.blink_state > 0 else 0
+        
+        # Top Lid
+        top_lid_y = y - h/2 - 10
+        top_lid_target = y - h/2 + (h * eased_blink)
+        canvas.create_rectangle(x - w/2 - 10, top_lid_y, x + w/2 + 10, top_lid_target, 
+                                fill=lid_color, outline="")
+        
+        # Bottom Lid (slight upward movement during blink)
+        bot_lid_y = y + h/2 + 10
+        bot_lid_target = y + h/2 - (h * eased_blink * 0.15)
+        canvas.create_rectangle(x - w/2 - 10, bot_lid_target, x + w/2 + 10, bot_lid_y, 
+                                fill=lid_color, outline="")
+
+    def _animate(self):
+        """Update animations every 20ms (50fps)"""
+        if hasattr(self, "face_canvas"):
+            self._draw_face(self.face_canvas, full=(UI_MODE == "face"))
+        self.root.after(20, self._animate)
+
+    def _schedule_blink(self):
+        """Randomized blinking with organic timing"""
+        def do_blink():
+            # Closing (fast)
+            steps = 4
+            for i in range(steps + 1):
+                self.blink_state = i / float(steps)
+                time.sleep(0.015)
+            # Opening (slightly slower)
+            for i in range(steps + 1):
+                self.blink_state = 1.0 - (i / float(steps))
+                time.sleep(0.02)
+            self.blink_state = 0.0
+            
+        def blink_loop():
+            while True:
+                # Normal blink interval
+                time.sleep(np.random.uniform(3.0, 7.0))
+                do_blink()
+                # Occasional double-blink
+                if np.random.random() < 0.2:
+                    time.sleep(0.1)
+                    do_blink()
+        
+        threading.Thread(target=blink_loop, daemon=True).start()
 
     def _set_emotion(self, label):
+        self.current_emotion = label
         style = EMOTION_MAP.get(label, EMOTION_MAP["neutral"])
-        for pupil in (self.left_pupil, self.right_pupil):
-            x0, y0, x1, y1 = self.face_canvas.coords(pupil)
-            cx = (x0 + x1) / 2 + style.dx
-            cy = (y0 + y1) / 2 + style.dy
-            size = (x1 - x0) * style.scale
-            self.face_canvas.coords(pupil, cx - size/2, cy - size/2, cx + size/2, cy + size/2)
+        # Subtle look shifts based on emotion
+        self.look_x = style.dx / 10.0
+        self.look_y = style.dy / 10.0
 
     def _toggle_recording(self):
         if not self.recording:
@@ -187,6 +327,38 @@ class App:
                 self._tts(reply)
                 self._emotion(reply)
                 self._append_text(f"You: {transcript}\nV25: {reply}\n")
+
+    def _start_auto_listen(self):
+        def run():
+            while True:
+                try:
+                    audio = sd.rec(int(SAMPLE_RATE * CHUNK_SECONDS), samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32")
+                    sd.wait()
+                    rms = float(np.sqrt(np.mean(np.square(audio))))
+                    if rms < SILENCE_RMS:
+                        continue
+                    wav_bytes = io.BytesIO()
+                    with wave.open(wav_bytes, "wb") as wf:
+                        wf.setnchannels(CHANNELS)
+                        wf.setsampwidth(2)
+                        wf.setframerate(SAMPLE_RATE)
+                        wf.writeframes((audio * 32767).astype(np.int16).tobytes())
+                    transcript = self._post_audio(wav_bytes.getvalue())
+                    if not transcript:
+                        continue
+                    transcript_l = transcript.lower()
+                    if WAKE_WORD and WAKE_WORD not in transcript_l:
+                        continue
+                    cleaned = transcript_l.replace(WAKE_WORD, "").strip()
+                    if not cleaned:
+                        continue
+                    reply = self._chat(cleaned)
+                    if reply:
+                        self._tts(reply)
+                        self._emotion(reply)
+                except Exception:
+                    time.sleep(0.5)
+        threading.Thread(target=run, daemon=True).start()
 
     def _post_audio(self, wav_data):
         try:

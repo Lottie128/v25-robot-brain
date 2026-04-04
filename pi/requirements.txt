@@ -2,3 +2,8 @@ requests
 numpy
 sounddevice
 Pillow
+rplidar-roboticia
+pyserial
+RPi.GPIO
+picamera2
+adafruit-circuitpython-rplidar

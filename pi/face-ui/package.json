@@ -1,0 +1,12 @@
+{
+  "name": "v25-face-ui",
+  "version": "1.0.0",
+  "description": "High-fidelity robot face for V25",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^28.0.0"
+  }
+}
